@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 #
 # Created by: Pearu Peterson, March 2002
 #
@@ -8,22 +7,21 @@
 from __future__ import division, print_function, absolute_import
 
 import random
-import warnings
 import functools
 
 import numpy as np
 from numpy import array, matrix, identity, dot, sqrt, double
-from numpy.testing import (TestCase, run_module_suite,
+from numpy.testing import (
         assert_array_equal, assert_array_less, assert_equal,
         assert_array_almost_equal, assert_array_almost_equal_nulp,
-        assert_allclose, assert_, decorators)
+        assert_allclose, assert_)
+import pytest
 
-from scipy._lib._numpy_compat import _assert_warns
+from scipy._lib._numpy_compat import _assert_warns, suppress_warnings
 
 import scipy.linalg
 from scipy.linalg import (funm, signm, logm, sqrtm, fractional_matrix_power,
         expm, expm_frechet, expm_cond, norm)
-from scipy.linalg.matfuncs import expm2, expm3
 from scipy.linalg import _matfuncs_inv_ssq
 import scipy.linalg._expm_frechet
 
@@ -51,7 +49,7 @@ def _get_al_mohy_higham_2012_experiment_1():
     return A
 
 
-class TestSignM(TestCase):
+class TestSignM(object):
 
     def test_nils(self):
         a = array([[29.2, -24.2, 69.5, 49.8, 7.],
@@ -94,7 +92,7 @@ class TestSignM(TestCase):
         #XXX: what would be the correct result?
 
 
-class TestLogM(TestCase):
+class TestLogM(object):
 
     def test_nils(self):
         a = array([[-2., 25., 0., 0., 0., 0., 0.],
@@ -194,7 +192,7 @@ class TestLogM(TestCase):
             w = scipy.linalg.eigvals(X)
             assert_(1e-2 < np.absolute(w.imag).sum())
             Y, info = logm(X, disp=False)
-            assert_(np.issubdtype(Y.dtype, dt))
+            assert_(np.issubdtype(Y.dtype, np.inexact))
             assert_allclose(expm(Y), X)
 
     def test_real_mixed_sign_spectrum(self):
@@ -206,9 +204,9 @@ class TestLogM(TestCase):
             for dt in float, complex:
                 A = np.array(M, dtype=dt)
                 A_logm, info = logm(A, disp=False)
-                assert_(np.issubdtype(A_logm.dtype, complex))
+                assert_(np.issubdtype(A_logm.dtype, np.complexfloating))
 
-    def test_logm_exactly_singular(self):
+    def test_exactly_singular(self):
         A = np.array([[0, 0], [1j, 1j]])
         B = np.asarray([[1, 1], [0, 0]])
         for M in A, A.T, B, B.T:
@@ -217,15 +215,30 @@ class TestLogM(TestCase):
             E = expm(L)
             assert_allclose(E, M, atol=1e-14)
 
-    def test_logm_nearly_singular(self):
+    def test_nearly_singular(self):
         M = np.array([[1e-100]])
         expected_warning = _matfuncs_inv_ssq.LogmNearlySingularWarning
         L, info = _assert_warns(expected_warning, logm, M, disp=False)
         E = expm(L)
         assert_allclose(E, M, atol=1e-14)
 
+    def test_opposite_sign_complex_eigenvalues(self):
+        # See gh-6113
+        E = [[0, 1], [-1, 0]]
+        L = [[0, np.pi*0.5], [-np.pi*0.5, 0]]
+        assert_allclose(expm(L), E, atol=1e-14)
+        assert_allclose(logm(E), L, atol=1e-14)
+        E = [[1j, 4], [0, -1j]]
+        L = [[1j*np.pi*0.5, 2*np.pi], [0, -1j*np.pi*0.5]]
+        assert_allclose(expm(L), E, atol=1e-14)
+        assert_allclose(logm(E), L, atol=1e-14)
+        E = [[1j, 0], [0, -1j]]
+        L = [[1j*np.pi*0.5, 0], [0, -1j*np.pi*0.5]]
+        assert_allclose(expm(L), E, atol=1e-14)
+        assert_allclose(logm(E), L, atol=1e-14)
 
-class TestSqrtM(TestCase):
+
+class TestSqrtM(object):
     def test_round_trip_random_float(self):
         np.random.seed(1234)
         for n in range(1, 6):
@@ -374,8 +387,38 @@ class TestSqrtM(TestCase):
         B = sqrtm(A, disp=True)
         assert_allclose(B.dot(B), A)
 
+    def test_opposite_sign_complex_eigenvalues(self):
+        M = [[2j, 4], [0, -2j]]
+        R = [[1+1j, 2], [0, 1-1j]]
+        assert_allclose(np.dot(R, R), M, atol=1e-14)
+        assert_allclose(sqrtm(M), R, atol=1e-14)
 
-class TestFractionalMatrixPower(TestCase):
+    def test_gh4866(self):
+        M = np.array([[1, 0, 0, 1],
+                      [0, 0, 0, 0],
+                      [0, 0, 0, 0],
+                      [1, 0, 0, 1]])
+        R = np.array([[sqrt(0.5), 0, 0, sqrt(0.5)],
+                      [0, 0, 0, 0],
+                      [0, 0, 0, 0],
+                      [sqrt(0.5), 0, 0, sqrt(0.5)]])
+        assert_allclose(np.dot(R, R), M, atol=1e-14)
+        assert_allclose(sqrtm(M), R, atol=1e-14)
+
+    def test_gh5336(self):
+        M = np.diag([2, 1, 0])
+        R = np.diag([sqrt(2), 1, 0])
+        assert_allclose(np.dot(R, R), M, atol=1e-14)
+        assert_allclose(sqrtm(M), R, atol=1e-14)
+
+    def test_gh7839(self):
+        M = np.zeros((2, 2))
+        R = np.zeros((2, 2))
+        assert_allclose(np.dot(R, R), M, atol=1e-14)
+        assert_allclose(sqrtm(M), R, atol=1e-14)
+
+
+class TestFractionalMatrixPower(object):
     def test_round_trip_random_complex(self):
         np.random.seed(1234)
         for p in range(1, 5):
@@ -533,7 +576,7 @@ class TestFractionalMatrixPower(TestCase):
                 A_power = fractional_matrix_power(A, p)
                 assert_(A_power.dtype.char in complex_dtype_chars)
 
-    @decorators.knownfailureif(True, 'Too unstable across LAPACKs.')
+    @pytest.mark.xfail(reason='Too unstable across LAPACKs.')
     def test_singular(self):
         # Negative fractional powers do not work with singular matrices.
         for matrix_as_list in (
@@ -553,32 +596,17 @@ class TestFractionalMatrixPower(TestCase):
                     A_round_trip = fractional_matrix_power(A_power, 1/p)
                     assert_allclose(A_round_trip, A)
 
+    def test_opposite_sign_complex_eigenvalues(self):
+        M = [[2j, 4], [0, -2j]]
+        R = [[1+1j, 2], [0, 1-1j]]
+        assert_allclose(np.dot(R, R), M, atol=1e-14)
+        assert_allclose(fractional_matrix_power(M, 0.5), R, atol=1e-14)
 
-class TestExpM(TestCase):
+
+class TestExpM(object):
     def test_zero(self):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            a = array([[0.,0],[0,0]])
-            assert_array_almost_equal(expm(a),[[1,0],[0,1]])
-            assert_array_almost_equal(expm2(a),[[1,0],[0,1]])
-            assert_array_almost_equal(expm3(a),[[1,0],[0,1]])
-
-    def test_consistency(self):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            a = array([[0.,1],[-1,0]])
-            assert_array_almost_equal(expm(a), expm2(a))
-            assert_array_almost_equal(expm(a), expm3(a))
-
-            a = array([[1j,1],[-1,-2j]])
-            assert_array_almost_equal(expm(a), expm2(a))
-            assert_array_almost_equal(expm(a), expm3(a))
-
-    def test_npmatrix(self):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            a = matrix([[3.,0],[0,-3.]])
-            assert_array_almost_equal(expm(a), expm2(a))
+        a = array([[0.,0],[0,0]])
+        assert_array_almost_equal(expm(a),[[1,0],[0,1]])
 
     def test_single_elt(self):
         # See gh-5853
@@ -602,7 +630,7 @@ class TestExpM(TestCase):
                                               -0.84864425749518878))
 
 
-class TestExpmFrechet(TestCase):
+class TestExpmFrechet(object):
 
     def test_expm_frechet(self):
         # a test of the basic functionality
@@ -705,8 +733,8 @@ class TestExpmFrechet(TestCase):
         assert_allclose(sps_expm, blockEnlarge_expm)
         assert_allclose(sps_frechet, blockEnlarge_frechet)
 
-    @decorators.slow
-    @decorators.skipif(True, 'this test is deliberately slow')
+    @pytest.mark.slow
+    @pytest.mark.skip(reason='this test is deliberately slow')
     def test_medium_matrix(self):
         # profile this to see the speed difference
         n = 1000
@@ -739,7 +767,7 @@ def _relative_error(f, A, perturbation):
     return norm(X_prime - X) / norm(X)
 
 
-class TestExpmConditionNumber(TestCase):
+class TestExpmConditionNumber(object):
     def test_expm_cond_smoke(self):
         np.random.seed(1234)
         for n in range(1, 4):
@@ -769,7 +797,7 @@ class TestExpmConditionNumber(TestCase):
             A = np.random.randn(1, 1)
             assert_allclose(expm_cond(A), np.absolute(A)[0, 0])
 
-    @decorators.slow
+    @pytest.mark.slow
     def test_expm_cond_fuzz(self):
         np.random.seed(12345)
         eps = 1e-5
@@ -806,7 +834,3 @@ class TestExpmConditionNumber(TestCase):
             # eps times the condition number kappa.
             # In the limit as eps approaches zero it should never be greater.
             assert_array_less(p_best_relerr, (1 + 2*eps) * eps * kappa)
-
-
-if __name__ == "__main__":
-    run_module_suite()

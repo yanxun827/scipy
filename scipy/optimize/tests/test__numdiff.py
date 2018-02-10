@@ -4,8 +4,9 @@ import math
 from itertools import product
 
 import numpy as np
-from numpy.testing import (assert_raises, assert_allclose, assert_equal,
-                           assert_, run_module_suite)
+from numpy.testing import assert_allclose, assert_equal, assert_
+from pytest import raises as assert_raises
+
 from scipy.sparse import csr_matrix, csc_matrix, lil_matrix
 
 from scipy.optimize._numdiff import (
@@ -382,7 +383,7 @@ class TestApproxDerivativesDense(object):
 
 class TestApproxDerivativeSparse(object):
     # Example from Numerical Optimization 2nd edition, p. 198.
-    def __init__(self):
+    def setup_method(self):
         np.random.seed(0)
         self.n = 50
         self.lb = -0.1 * (1 + np.arange(self.n))
@@ -443,6 +444,11 @@ class TestApproxDerivativeSparse(object):
                                   rel_step=rel_step, sparsity=(A, groups))
             assert_allclose(J.toarray(), self.J_true, rtol=1e-5)
 
+    def test_no_precomputed_groups(self):
+        A = self.structure(self.n)
+        J = approx_derivative(self.fun, self.x0, sparsity=A)
+        assert_allclose(J.toarray(), self.J_true, rtol=1e-6)
+
     def test_equivalence(self):
         structure = np.ones((self.n, self.n), dtype=int)
         groups = np.arange(self.n)
@@ -456,28 +462,11 @@ class TestApproxDerivativeSparse(object):
         def jac(x):
             return csr_matrix(self.jac(x))
 
-        accuracy = check_derivative(
-            self.fun, jac, self.x0,
-            bounds=(self.lb, self.ub), sparse_diff=True)
+        accuracy = check_derivative(self.fun, jac, self.x0,
+                                    bounds=(self.lb, self.ub))
         assert_(accuracy < 1e-9)
 
-        A = self.structure(self.n)
-        groups = group_columns(A)
-        accuracy = check_derivative(
-            self.fun, jac, self.x0, bounds=(self.lb, self.ub),
-            sparse_diff=True, sparsity=(A, groups)
-        )
+        accuracy = check_derivative(self.fun, jac, self.x0,
+                                    bounds=(self.lb, self.ub))
         assert_(accuracy < 1e-9)
 
-        accuracy = check_derivative(
-            self.fun, jac, self.x0,
-            bounds=(self.lb, self.ub), sparse_diff=False)
-        # Slightly worse accuracy because all elements are computed.
-        # Floating point issues make true 0 to some smal value, then
-        # it is divided by small step and as a result we have ~1e-9 element,
-        # which is actually should be zero.
-        assert_(accuracy < 1e-8)
-
-
-if __name__ == '__main__':
-    run_module_suite()

@@ -7,6 +7,9 @@ from . import distributions
 
 __all__ = ['_find_repeats', 'linregress', 'theilslopes']
 
+LinregressResult = namedtuple('LinregressResult', ('slope', 'intercept',
+                                                   'rvalue', 'pvalue',
+                                                   'stderr'))
 
 def linregress(x, y=None):
     """
@@ -29,28 +32,39 @@ def linregress(x, y=None):
     rvalue : float
         Correlation coefficient.
     pvalue : float
-        Two-sided p-value for a hypothesis test of which null hypothesis is
-        that the slope is zero.
+        two-sided p-value for a hypothesis test whose null hypothesis is
+        that the slope is zero, using Wald Test with t-distribution of
+        the test statistic.
     stderr : float
         Standard error of the estimated slope.
 
     See also
     --------
-    optimize.curve_fit : Use non-linear least squares to fit a function to data.
-    optimize.leastsq : Minimize the sum of squares of a set of equations.
+    :func:`scipy.optimize.curve_fit` : Use non-linear
+     least squares to fit a function to data.
+    :func:`scipy.optimize.leastsq` : Minimize the sum of
+     squares of a set of equations.
 
     Examples
     --------
+    >>> import matplotlib.pyplot as plt
     >>> from scipy import stats
     >>> np.random.seed(12345678)
     >>> x = np.random.random(10)
     >>> y = np.random.random(10)
-    >>> slope, intercept, r_value, p_value, std_err = stats.linregress(x,y)
+    >>> slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
 
-    # To get coefficient of determination (r_squared)
+    To get coefficient of determination (r_squared)
 
     >>> print("r-squared:", r_value**2)
-    ('r-squared:', 0.080402268539028335)
+    r-squared: 0.080402268539
+
+    Plot the data along with the fitted line
+
+    >>> plt.plot(x, y, 'o', label='original data')
+    >>> plt.plot(x, intercept + slope*x, 'r', label='fitted line')
+    >>> plt.legend()
+    >>> plt.show()
 
     """
     TINY = 1.0e-20
@@ -89,19 +103,21 @@ def linregress(x, y=None):
             r = -1.0
 
     df = n - 2
-    t = r * np.sqrt(df / ((1.0 - r + TINY)*(1.0 + r + TINY)))
-    prob = 2 * distributions.t.sf(np.abs(t), df)
-    slope = covxy / varx
-    intercept = ymean - (slope * xmean)
-    mse = (1 - r**2) * vary / df
-    stderr_est = np.sqrt(mse)
-    stderr_slope =  np.sqrt(mse / varx)
-    stderr_intercept = np.sqrt(mse * (1/n + xmean**2/varx))
+    slope = r_num / ssxm
+    intercept = ymean - slope*xmean
+    if n == 2:
+        # handle case when only two points are passed in
+        if y[0] == y[1]:
+            prob = 1.0
+        else:
+            prob = 0.0
+        sterrest = 0.0
+    else:
+        t = r * np.sqrt(df / ((1.0 - r + TINY)*(1.0 + r + TINY)))
+        prob = 2 * distributions.t.sf(np.abs(t), df)
+        sterrest = np.sqrt((1 - r**2) * ssym / ssxm / df)
 
-    LinregressResult = namedtuple('LinregressResult', ('slope', 'intercept',
-                                                       'rvalue', 'pvalue',
-                                                       'stderr'))
-    return LinregressResult(slope, intercept, r, prob, stderr_slope)
+    return LinregressResult(slope, intercept, r, prob, sterrest)
 
 
 def theilslopes(y, x=None, alpha=0.95):

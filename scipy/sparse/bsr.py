@@ -13,7 +13,8 @@ import numpy as np
 from .data import _data_matrix, _minmax_mixin
 from .compressed import _cs_matrix
 from .base import isspmatrix, _formats, spmatrix
-from .sputils import isshape, getdtype, to_native, upcast, get_index_dtype
+from .sputils import (isshape, getdtype, to_native, upcast, get_index_dtype,
+                      check_shape)
 from . import _sparsetools
 from ._sparsetools import (bsr_matvec, bsr_matvecs, csr_matmat_pass1,
                            bsr_matmat_pass2, bsr_transpose, bsr_sort_indices)
@@ -130,7 +131,7 @@ class bsr_matrix(_cs_matrix, _minmax_mixin):
         elif isinstance(arg1,tuple):
             if isshape(arg1):
                 # it's a tuple of matrix dimensions (M,N)
-                self.shape = arg1
+                self._shape = check_shape(arg1)
                 M,N = self.shape
                 # process blocksize
                 if blocksize is None:
@@ -162,7 +163,7 @@ class bsr_matrix(_cs_matrix, _minmax_mixin):
 
                 # Select index dtype large enough to pass array and
                 # scalar parameters to sparsetools
-                maxval = None
+                maxval = 1
                 if shape is not None:
                     maxval = max(shape)
                 if blocksize is not None:
@@ -186,7 +187,7 @@ class bsr_matrix(_cs_matrix, _minmax_mixin):
             self._set_self(arg1)
 
         if shape is not None:
-            self.shape = shape   # spmatrix will check for errors
+            self._shape = check_shape(shape)
         else:
             if self.shape is None:
                 # shape not already set, try to infer dimensions
@@ -197,14 +198,14 @@ class bsr_matrix(_cs_matrix, _minmax_mixin):
                     raise ValueError('unable to infer matrix dimensions')
                 else:
                     R,C = self.blocksize
-                    self.shape = (M*R,N*C)
+                    self._shape = check_shape((M*R,N*C))
 
         if self.shape is None:
             if shape is None:
                 # TODO infer shape here
                 raise ValueError('need to infer shape')
             else:
-                self.shape = shape
+                self._shape = check_shape(shape)
 
         if dtype is not None:
             self.data = self.data.astype(dtype)
@@ -293,23 +294,23 @@ class bsr_matrix(_cs_matrix, _minmax_mixin):
                 (self.shape + (self.dtype.type, self.nnz) + self.blocksize +
                  (format,)))
 
-    def diagonal(self):
-        """Returns the main diagonal of the matrix
-        """
-        M,N = self.shape
-        R,C = self.blocksize
-        y = np.empty(min(M,N), dtype=upcast(self.dtype))
-        _sparsetools.bsr_diagonal(M//R, N//C, R, C,
+    def diagonal(self, k=0):
+        rows, cols = self.shape
+        if k <= -rows or k >= cols:
+            raise ValueError("k exceeds matrix dimensions")
+        R, C = self.blocksize
+        y = np.zeros(min(rows + min(k, 0), cols - max(k, 0)),
+                     dtype=upcast(self.dtype))
+        _sparsetools.bsr_diagonal(k, rows // R, cols // C, R, C,
                                   self.indptr, self.indices,
                                   np.ravel(self.data), y)
         return y
 
+    diagonal.__doc__ = spmatrix.diagonal.__doc__
+
     ##########################
     # NotImplemented methods #
     ##########################
-
-    def getdata(self,ind):
-        raise NotImplementedError
 
     def __getitem__(self,key):
         raise NotImplementedError
@@ -321,11 +322,20 @@ class bsr_matrix(_cs_matrix, _minmax_mixin):
     # Arithmetic methods #
     ######################
 
+    @np.deprecate(message="BSR matvec is deprecated in scipy 0.19.0. "
+                          "Use * operator instead.")
     def matvec(self, other):
+        """Multiply matrix by vector."""
         return self * other
 
+    @np.deprecate(message="BSR matmat is deprecated in scipy 0.19.0. "
+                          "Use * operator instead.")
     def matmat(self, other):
+        """Multiply this sparse matrix by other matrix."""
         return self * other
+
+    def _add_dense(self, other):
+        return self.tocoo(copy=False)._add_dense(other)
 
     def _mul_vector(self, other):
         M,N = self.shape
@@ -475,31 +485,44 @@ class bsr_matrix(_cs_matrix, _minmax_mixin):
         from .coo import coo_matrix
         return coo_matrix((data,(row,col)), shape=self.shape)
 
-    def transpose(self):
+    def toarray(self, order=None, out=None):
+        return self.tocoo(copy=False).toarray(order=order, out=out)
 
-        R,C = self.blocksize
-        M,N = self.shape
+    toarray.__doc__ = spmatrix.toarray.__doc__
+
+    def transpose(self, axes=None, copy=False):
+        if axes is not None:
+            raise ValueError(("Sparse matrices do not support "
+                              "an 'axes' parameter because swapping "
+                              "dimensions is the only logical permutation."))
+
+        R, C = self.blocksize
+        M, N = self.shape
         NBLK = self.nnz//(R*C)
 
         if self.nnz == 0:
-            return bsr_matrix((N,M), blocksize=(C,R),
-                              dtype=self.dtype)
+            return bsr_matrix((N, M), blocksize=(C, R),
+                              dtype=self.dtype, copy=copy)
 
         indptr = np.empty(N//C + 1, dtype=self.indptr.dtype)
         indices = np.empty(NBLK, dtype=self.indices.dtype)
-        data = np.empty((NBLK,C,R), dtype=self.data.dtype)
+        data = np.empty((NBLK, C, R), dtype=self.data.dtype)
 
         bsr_transpose(M//R, N//C, R, C,
                       self.indptr, self.indices, self.data.ravel(),
                       indptr, indices, data.ravel())
 
-        return bsr_matrix((data,indices,indptr), shape=(N,M))
+        return bsr_matrix((data, indices, indptr),
+                          shape=(N, M), copy=copy)
+
+    transpose.__doc__ = spmatrix.transpose.__doc__
 
     ##############################################################
     # methods that examine or modify the internal data structure #
     ##############################################################
 
     def eliminate_zeros(self):
+        """Remove zero elements in-place."""
         R,C = self.blocksize
         M,N = self.shape
 
@@ -654,4 +677,26 @@ class bsr_matrix(_cs_matrix, _minmax_mixin):
 
 
 def isspmatrix_bsr(x):
+    """Is x of a bsr_matrix type?
+
+    Parameters
+    ----------
+    x
+        object to check for being a bsr matrix
+
+    Returns
+    -------
+    bool
+        True if x is a bsr matrix, False otherwise
+
+    Examples
+    --------
+    >>> from scipy.sparse import bsr_matrix, isspmatrix_bsr
+    >>> isspmatrix_bsr(bsr_matrix([[5]]))
+    True
+
+    >>> from scipy.sparse import bsr_matrix, csr_matrix, isspmatrix_bsr
+    >>> isspmatrix_bsr(csr_matrix([[5]]))
+    False
+    """
     return isinstance(x, bsr_matrix)

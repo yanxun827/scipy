@@ -6,6 +6,7 @@ distcont = [
     ['alpha', (3.5704770516650459,)],
     ['anglit', ()],
     ['arcsine', ()],
+    ['argus', (1.0,)],
     ['beta', (2.3098496451481823, 0.62687954300963677)],
     ['betaprime', (5, 6)],
     ['bradford', (0.29891359763170633,)],
@@ -15,6 +16,7 @@ distcont = [
     ['chi', (78,)],
     ['chi2', (55,)],
     ['cosine', ()],
+    ['crystalball', (2.0, 3.0)],
     ['dgamma', (1.1023326088288166,)],
     ['dweibull', (2.0685080649914673,)],
     ['erlang', (10,)],
@@ -54,6 +56,11 @@ distcont = [
     ['invweibull', (10.58,)],
     ['johnsonsb', (4.3172675099141058, 3.1837781130785063)],
     ['johnsonsu', (2.554395574161155, 2.2482281679651965)],
+    ['kappa4', (0.0, 0.0)],
+    ['kappa4', (-0.1, 0.1)],
+    ['kappa4', (0.0, 0.1)],
+    ['kappa4', (0.1, 0.0)],
+    ['kappa3', (1.0,)],
     ['ksone', (1000,)],  # replace 22 by 100 to avoid failing range, ticket 956
     ['kstwobign', ()],
     ['laplace', ()],
@@ -69,6 +76,7 @@ distcont = [
     ['lomax', (1.8771398388773268,)],
     ['maxwell', ()],
     ['mielke', (10.4, 3.6)],
+    ['moyal', ()],
     ['nakagami', (4.9673794866666237,)],
     ['ncf', (27, 27, 0.41578441799226107)],
     ['nct', (14, 0.24045031331198066)],
@@ -87,6 +95,7 @@ distcont = [
     ['semicircular', ()],
     ['skewnorm', (4.0,)],
     ['t', (2.7433514990818093,)],
+    ['trapz', (0.2, 0.8)],
     ['triang', (0.15785029824528218,)],
     ['truncexpon', (4.6907725456810478,)],
     ['truncnorm', (-1.0978730080013919, 2.7306754109031979)],
@@ -110,7 +119,7 @@ distdiscrete = [
     ['hypergeom',(30, 12, 6)],
     ['hypergeom',(21,3,12)],  # numpy.random (3,18,12) numpy ticket:921
     ['hypergeom',(21,18,11)],  # numpy.random (18,3,11) numpy ticket:921
-    ['logser', (0.6,)],  # reenabled, numpy ticket:921
+    ['logser', (0.6,)],  # re-enabled, numpy ticket:921
     ['nbinom', (5, 0.5)],
     ['nbinom', (0.4, 0.4)],  # from tickets: 583
     ['planck', (0.51,)],   # 4.1

@@ -1,6 +1,8 @@
 cimport numpy as np
 from libc.math cimport fabs, sin, cos, exp
-from _complexstuff cimport zisfinite, zabs, zpack
+from ._complexstuff cimport (
+    zisfinite, zabs, zpack, npy_cdouble_from_double_complex,
+    double_complex_from_npy_cdouble)
 
 cdef extern from "_complexstuff.h":
     double npy_atan2(double y, double x) nogil
@@ -33,8 +35,8 @@ cdef extern from "cephes.h":
 #       = 0.5 * log1p(x**2 + y**2 + 2*x)
 #       = 0.5 * log1p(hypot(x,y) * (hypot(x, y) + 2*x/hypot(x,y)))
 # 
-# This expression suffers from cancelation when x < 0 and
-# y = +/-sqrt(2*fabs(x)). To get around this cancelation problem, we use
+# This expression suffers from cancellation when x < 0 and
+# y = +/-sqrt(2*fabs(x)). To get around this cancellation problem, we use
 # double-double precision when necessary.
 cdef inline double complex clog1p(double complex z) nogil:
     cdef double zr, zi, x, y, az, azi
@@ -42,8 +44,8 @@ cdef inline double complex clog1p(double complex z) nogil:
 
     if not zisfinite(z):
         z = z + 1 
-        ret = npy_clog((<np.npy_cdouble*>&z)[0])
-        return (<double complex*>&ret)[0]
+        ret = npy_clog(npy_cdouble_from_double_complex(z))
+        return double_complex_from_npy_cdouble(ret)
 
     zr = z.real
     zi = z.imag
@@ -62,8 +64,8 @@ cdef inline double complex clog1p(double complex z) nogil:
             return zpack(x, y)
 
     z = z + 1.0
-    ret = npy_clog((<np.npy_cdouble*>&z)[0])
-    return (<double complex*>&ret)[0]
+    ret = npy_clog(npy_cdouble_from_double_complex(z))
+    return double_complex_from_npy_cdouble(ret)
 
 cdef inline double complex clog1p_ddouble(double zr, double zi) nogil:
     cdef double x, y
@@ -86,7 +88,7 @@ cdef inline double complex clog1p_ddouble(double zr, double zi) nogil:
 # cexpm1(z) = cexp(z) - 1
 # 
 # The imaginary part of this is easily computed via exp(z.real)*sin(z.imag)
-# The real part is difficult to compute when there is cancelation e.g. when
+# The real part is difficult to compute when there is cancellation e.g. when
 # z.real = -log(cos(z.imag)).  There isn't a way around this problem  that
 # doesn't involve computing exp(z.real) and/or cos(z.imag) to higher
 # precision.
@@ -95,8 +97,8 @@ cdef inline double complex cexpm1(double complex z) nogil:
     cdef np.npy_cdouble ret
 
     if not zisfinite(z):
-        ret = npy_cexp((<np.npy_cdouble*>&z)[0])
-        return (<double complex*>&ret)[0] - 1.0
+        ret = npy_cexp(npy_cdouble_from_double_complex(z))
+        return double_complex_from_npy_cdouble(ret) - 1.0
 
     zr = z.real
     zi = z.imag

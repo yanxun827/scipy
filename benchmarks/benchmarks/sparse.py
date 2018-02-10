@@ -5,7 +5,6 @@ from __future__ import division, print_function, absolute_import
 
 import warnings
 import time
-import collections
 import timeit
 
 import numpy
@@ -195,7 +194,7 @@ class Conversion(Benchmark):
     param_names = ['from_format', 'to_format']
 
     def setup(self, fromfmt, tofmt):
-        base = poisson2d(100).asformat(fromfmt)
+        base = poisson2d(100, format=fromfmt)
 
         try:
             self.fn = getattr(base, 'to' + tofmt)
@@ -291,6 +290,12 @@ class NullSlice(Benchmark):
         k = 1000
         self.X = sparse.rand(n, k, format=format, density=density)
 
+    def time_getrow(self, density, format):
+        self.X.getrow(100)
+
+    def time_getcol(self, density, format):
+        self.X.getcol(100)
+
     def time_3_rows(self, density, format):
         self.X[[0, 100, 105], :]
 
@@ -305,7 +310,7 @@ class NullSlice(Benchmark):
 
 
 class Diagonal(Benchmark):
-    params = [[0.01, 0.1, 0.5], ['csr', 'csc', 'coo', 'lil', 'dok']]
+    params = [[0.01, 0.1, 0.5], ['csr', 'csc', 'coo', 'lil', 'dok', 'dia']]
     param_names = ['density', 'format']
 
     def setup(self, density, format):
@@ -317,3 +322,53 @@ class Diagonal(Benchmark):
 
     def time_diagonal(self, density, format):
         self.X.diagonal()
+
+
+class Sum(Benchmark):
+    params = [[0.01, 0.1, 0.5], ['csr', 'csc', 'coo', 'lil', 'dok', 'dia']]
+    param_names = ['density', 'format']
+
+    def setup(self, density, format):
+        n = 1000
+        if format == 'dok' and n * density >= 500:
+            raise NotImplementedError()
+
+        self.X = sparse.rand(n, n, format=format, density=density)
+
+    def time_sum(self, density, format):
+        self.X.sum()
+
+    def time_sum_axis0(self, density, format):
+        self.X.sum(axis=0)
+
+    def time_sum_axis1(self, density, format):
+        self.X.sum(axis=1)
+
+
+class Iteration(Benchmark):
+    params = [[0.05, 0.01], ['csr', 'csc', 'lil']]
+    param_names = ['density', 'format']
+
+    def setup(self, density, format):
+        n = 500
+        k = 1000
+        self.X = sparse.rand(n, k, format=format, density=density)
+
+    def time_iteration(self, density, format):
+        for row in self.X:
+            pass
+
+
+class Densify(Benchmark):
+    params = [
+        ['dia', 'csr', 'csc', 'dok', 'lil', 'coo', 'bsr'],
+        ['C', 'F'],
+    ]
+    param_names = ['format', 'order']
+
+    def setup(self, format, order):
+        self.X = sparse.rand(1000, 1000, format=format, density=0.01)
+
+    def time_toarray(self, format, order):
+        self.X.toarray(order=order)
+

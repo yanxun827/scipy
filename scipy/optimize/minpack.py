@@ -1,5 +1,6 @@
 from __future__ import division, print_function, absolute_import
 
+import threading
 import warnings
 from . import _minpack
 
@@ -8,14 +9,14 @@ from numpy import (atleast_1d, dot, take, triu, shape, eye,
                    transpose, zeros, product, greater, array,
                    all, where, isscalar, asarray, inf, abs,
                    finfo, inexact, issubdtype, dtype)
-from scipy.linalg import svd
+from scipy.linalg import svd, cholesky, solve_triangular, LinAlgError
 from scipy._lib._util import _asarray_validated, _lazywhere
 from .optimize import OptimizeResult, _check_unknown_options, OptimizeWarning
 from ._lsq import least_squares
 from ._lsq.common import make_strictly_feasible
 from ._lsq.least_squares import prepare_bounds
 
-
+_MINPACK_LOCK = threading.RLock()
 error = _minpack.error
 
 __all__ = ['fsolve', 'leastsq', 'fixed_point', 'curve_fit']
@@ -62,7 +63,7 @@ def fsolve(func, x0, args=(), fprime=None, full_output=0,
         The starting estimate for the roots of ``func(x) = 0``.
     args : tuple, optional
         Any extra arguments to `func`.
-    fprime : callable(x), optional
+    fprime : callable ``f(x, *args)``, optional
         A function to compute the Jacobian of `func` with derivatives
         across the rows. By default, the Jacobian will be estimated.
     full_output : bool, optional
@@ -220,14 +221,16 @@ def _root_hybr(func, x0, args=(), jac=None,
             ml, mu = band[:2]
         if maxfev == 0:
             maxfev = 200 * (n + 1)
-        retval = _minpack._hybrd(func, x0, args, 1, xtol, maxfev,
-                                 ml, mu, epsfcn, factor, diag)
+        with _MINPACK_LOCK:
+            retval = _minpack._hybrd(func, x0, args, 1, xtol, maxfev,
+                                     ml, mu, epsfcn, factor, diag)
     else:
         _check_func('fsolve', 'fprime', Dfun, x0, args, n, (n, n))
         if (maxfev == 0):
             maxfev = 100 * (n + 1)
-        retval = _minpack._hybrj(func, Dfun, x0, args, 1,
-                                 col_deriv, xtol, maxfev, factor, diag)
+        with _MINPACK_LOCK:
+            retval = _minpack._hybrj(func, Dfun, x0, args, 1,
+                                     col_deriv, xtol, maxfev, factor, diag)
 
     x, status = retval[0], retval[-1]
 
@@ -383,8 +386,9 @@ def leastsq(func, x0, args=(), Dfun=None, full_output=0,
     if Dfun is None:
         if maxfev == 0:
             maxfev = 200*(n + 1)
-        retval = _minpack._lmdif(func, x0, args, full_output, ftol, xtol,
-                                 gtol, maxfev, epsfcn, factor, diag)
+        with _MINPACK_LOCK:
+            retval = _minpack._lmdif(func, x0, args, full_output, ftol, xtol,
+                                     gtol, maxfev, epsfcn, factor, diag)
     else:
         if col_deriv:
             _check_func('leastsq', 'Dfun', Dfun, x0, args, n, (n, m))
@@ -392,8 +396,10 @@ def leastsq(func, x0, args=(), Dfun=None, full_output=0,
             _check_func('leastsq', 'Dfun', Dfun, x0, args, n, (m, n))
         if maxfev == 0:
             maxfev = 100 * (n + 1)
-        retval = _minpack._lmder(func, Dfun, x0, args, full_output, col_deriv,
-                                 ftol, xtol, gtol, maxfev, factor, diag)
+        with _MINPACK_LOCK:
+            retval = _minpack._lmder(func, Dfun, x0, args, full_output,
+                                     col_deriv, ftol, xtol, gtol, maxfev,
+                                     factor, diag)
 
     errors = {0: ["Improper input parameters.", TypeError],
               1: ["Both actual and predicted relative reductions "
@@ -436,7 +442,6 @@ def leastsq(func, x0, args=(), Dfun=None, full_output=0,
         cov_x = None
         if info in [1, 2, 3, 4]:
             from numpy.dual import inv
-            from numpy.linalg import LinAlgError
             perm = take(eye(n), retval[1]['ipvt'] - 1, 0)
             r = triu(transpose(retval[1]['fjac'])[:n, :])
             R = dot(r, perm)
@@ -449,12 +454,38 @@ def leastsq(func, x0, args=(), Dfun=None, full_output=0,
         return (retval[0], info)
 
 
-def _general_function(params, xdata, ydata, function):
-    return function(xdata, *params) - ydata
+def _wrap_func(func, xdata, ydata, transform):
+    if transform is None:
+        def func_wrapped(params):
+            return func(xdata, *params) - ydata
+    elif transform.ndim == 1:
+        def func_wrapped(params):
+            return transform * (func(xdata, *params) - ydata)
+    else:
+        # Chisq = (y - yd)^T C^{-1} (y-yd)
+        # transform = L such that C = L L^T
+        # C^{-1} = L^{-T} L^{-1}
+        # Chisq = (y - yd)^T L^{-T} L^{-1} (y-yd)
+        # Define (y-yd)' = L^{-1} (y-yd)
+        # by solving
+        # L (y-yd)' = (y-yd)
+        # and minimize (y-yd)'^T (y-yd)'
+        def func_wrapped(params):
+            return solve_triangular(transform, func(xdata, *params) - ydata, lower=True)
+    return func_wrapped
 
 
-def _weighted_general_function(params, xdata, ydata, function, weights):
-    return weights * (function(xdata, *params) - ydata)
+def _wrap_jac(jac, xdata, transform):
+    if transform is None:
+        def jac_wrapped(params):
+            return jac(xdata, *params)
+    elif transform.ndim == 1:
+        def jac_wrapped(params):
+            return transform[:, np.newaxis] * np.asarray(jac(xdata, *params))
+    else:
+        def jac_wrapped(params):
+            return solve_triangular(transform, np.asarray(jac(xdata, *params)), lower=True)
+    return jac_wrapped
 
 
 def _initialize_feasible(lb, ub):
@@ -464,10 +495,10 @@ def _initialize_feasible(lb, ub):
 
     mask = lb_finite & ub_finite
     p0[mask] = 0.5 * (lb[mask] + ub[mask])
-    
+
     mask = lb_finite & ~ub_finite
     p0[mask] = lb[mask] + 1
-    
+
     mask = ~lb_finite & ub_finite
     p0[mask] = ub[mask] - 1
 
@@ -476,7 +507,7 @@ def _initialize_feasible(lb, ub):
 
 def curve_fit(f, xdata, ydata, p0=None, sigma=None, absolute_sigma=False,
               check_finite=True, bounds=(-np.inf, np.inf), method=None,
-              **kwargs):
+              jac=None, **kwargs):
     """
     Use non-linear least squares to fit a function, f, to data.
 
@@ -488,8 +519,7 @@ def curve_fit(f, xdata, ydata, p0=None, sigma=None, absolute_sigma=False,
         The model function, f(x, ...).  It must take the independent
         variable as the first argument and the parameters to fit as
         separate remaining arguments.
-    xdata : An M-length sequence or an (k,M)-shaped array
-        for functions with k predictors.
+    xdata : An M-length sequence or an (k,M)-shaped array for functions with k predictors
         The independent variable where the data is measured.
     ydata : M-length sequence
         The dependent data --- nominally f(xdata, ...)
@@ -498,28 +528,41 @@ def curve_fit(f, xdata, ydata, p0=None, sigma=None, absolute_sigma=False,
         values will all be 1 (if the number of parameters for the function
         can be determined using introspection, otherwise a ValueError
         is raised).
-    sigma : None or M-length sequence, optional
-        If not None, the uncertainties in the ydata array. These are used as
-        weights in the least-squares problem
-        i.e. minimising ``np.sum( ((f(xdata, *popt) - ydata) / sigma)**2 )``
-        If None, the uncertainties are assumed to be 1.
-    absolute_sigma : bool, optional
-        If False, `sigma` denotes relative weights of the data points.
-        The returned covariance matrix `pcov` is based on *estimated*
-        errors in the data, and is not affected by the overall
-        magnitude of the values in `sigma`. Only the relative
-        magnitudes of the `sigma` values matter.
+    sigma : None or M-length sequence or MxM array, optional
+        Determines the uncertainty in `ydata`. If we define residuals as
+        ``r = ydata - f(xdata, *popt)``, then the interpretation of `sigma`
+        depends on its number of dimensions:
 
-        If True, `sigma` describes one standard deviation errors of
-        the input data points. The estimated covariance in `pcov` is
-        based on these values.
+            - A 1-d `sigma` should contain values of standard deviations of
+              errors in `ydata`. In this case, the optimized function is
+              ``chisq = sum((r / sigma) ** 2)``.
+
+            - A 2-d `sigma` should contain the covariance matrix of
+              errors in `ydata`. In this case, the optimized function is
+              ``chisq = r.T @ inv(sigma) @ r``.
+
+              .. versionadded:: 0.19
+
+        None (default) is equivalent of 1-d `sigma` filled with ones.
+    absolute_sigma : bool, optional
+        If True, `sigma` is used in an absolute sense and the estimated parameter
+        covariance `pcov` reflects these absolute values.
+
+        If False, only the relative magnitudes of the `sigma` values matter.
+        The returned parameter covariance matrix `pcov` is based on scaling
+        `sigma` by a constant factor. This constant is set by demanding that the
+        reduced `chisq` for the optimal parameters `popt` when using the
+        *scaled* `sigma` equals unity. In other words, `sigma` is scaled to
+        match the sample variance of the residuals after the fit.
+        Mathematically,
+        ``pcov(absolute_sigma=False) = pcov(absolute_sigma=True) * chisq(popt)/(M-N)``
     check_finite : bool, optional
         If True, check that the input arrays do not contain nans of infs,
         and raise a ValueError if they do. Setting this parameter to
         False may silently produce nonsensical results if the input arrays
         do contain nans. Default is True.
     bounds : 2-tuple of array_like, optional
-        Lower and upper bounds on independent variables. Defaults to no bounds.        
+        Lower and upper bounds on parameters. Defaults to no bounds.
         Each element of the tuple must be either an array with the length equal
         to the number of parameters, or a scalar (in which case the bound is
         taken to be the same for all parameters.) Use ``np.inf`` with an
@@ -534,6 +577,15 @@ def curve_fit(f, xdata, ydata, p0=None, sigma=None, absolute_sigma=False,
         case.
 
         .. versionadded:: 0.17
+    jac : callable, string or None, optional
+        Function with signature ``jac(x, ...)`` which computes the Jacobian
+        matrix of the model function with respect to parameters as a dense
+        array_like structure. It will be scaled according to provided `sigma`.
+        If None (default), the Jacobian will be estimated numerically.
+        String keywords for 'trf' and 'dogbox' methods can be used to select
+        a finite difference scheme, see `least_squares`.
+
+        .. versionadded:: 0.18
     kwargs
         Keyword arguments passed to `leastsq` for ``method='lm'`` or
         `least_squares` otherwise.
@@ -541,8 +593,8 @@ def curve_fit(f, xdata, ydata, p0=None, sigma=None, absolute_sigma=False,
     Returns
     -------
     popt : array
-        Optimal values for the parameters so that the sum of the squared error
-        of ``f(xdata, *popt) - ydata`` is minimized
+        Optimal values for the parameters so that the sum of the squared
+        residuals of ``f(xdata, *popt) - ydata`` is minimized
     pcov : 2d array
         The estimated covariance of popt. The diagonals provide the variance
         of the parameter estimate. To compute one standard deviation errors
@@ -571,8 +623,8 @@ def curve_fit(f, xdata, ydata, p0=None, sigma=None, absolute_sigma=False,
     See Also
     --------
     least_squares : Minimize the sum of squares of nonlinear functions.
-    stats.linregress : Calculate a linear least squares regression for two sets
-                       of measurements.
+    scipy.stats.linregress : Calculate a linear least squares regression for
+                             two sets of measurements.
 
     Notes
     -----
@@ -586,20 +638,42 @@ def curve_fit(f, xdata, ydata, p0=None, sigma=None, absolute_sigma=False,
     Examples
     --------
     >>> import numpy as np
+    >>> import matplotlib.pyplot as plt
     >>> from scipy.optimize import curve_fit
+
     >>> def func(x, a, b, c):
     ...     return a * np.exp(-b * x) + c
 
+    Define the data to be fit with some noise:
+
     >>> xdata = np.linspace(0, 4, 50)
     >>> y = func(xdata, 2.5, 1.3, 0.5)
-    >>> ydata = y + 0.2 * np.random.normal(size=len(xdata))
+    >>> np.random.seed(1729)
+    >>> y_noise = 0.2 * np.random.normal(size=xdata.size)
+    >>> ydata = y + y_noise
+    >>> plt.plot(xdata, ydata, 'b-', label='data')
+
+    Fit for the parameters a, b, c of the function `func`:
 
     >>> popt, pcov = curve_fit(func, xdata, ydata)
+    >>> popt
+    array([ 2.55423706,  1.35190947,  0.47450618])
+    >>> plt.plot(xdata, func(xdata, *popt), 'r-',
+    ...          label='fit: a=%5.3f, b=%5.3f, c=%5.3f' % tuple(popt))
 
-    Constrain the optimization to the region of ``0 < a < 3``, ``0 < b < 2``
-    and ``0 < c < 1``:
+    Constrain the optimization to the region of ``0 <= a <= 3``,
+    ``0 <= b <= 1`` and ``0 <= c <= 0.5``:
 
-    >>> popt, pcov = curve_fit(func, xdata, ydata, bounds=(0, [3., 2., 1.]))
+    >>> popt, pcov = curve_fit(func, xdata, ydata, bounds=(0, [3., 1., 0.5]))
+    >>> popt
+    array([ 2.43708906,  1.        ,  0.35015434])
+    >>> plt.plot(xdata, func(xdata, *popt), 'g--',
+    ...          label='fit: a=%5.3f, b=%5.3f, c=%5.3f' % tuple(popt))
+
+    >>> plt.xlabel('x')
+    >>> plt.ylabel('y')
+    >>> plt.legend()
+    >>> plt.show()
 
     """
     if p0 is None:
@@ -642,23 +716,46 @@ def curve_fit(f, xdata, ydata, p0=None, sigma=None, absolute_sigma=False,
         else:
             xdata = np.asarray(xdata)
 
-    args = (xdata, ydata, f)
-    if sigma is None:
-        func = _general_function
+    # Determine type of sigma
+    if sigma is not None:
+        sigma = np.asarray(sigma)
+
+        # if 1-d, sigma are errors, define transform = 1/sigma
+        if sigma.shape == (ydata.size, ):
+            transform = 1.0 / sigma
+        # if 2-d, sigma is the covariance matrix,
+        # define transform = L such that L L^T = C
+        elif sigma.shape == (ydata.size, ydata.size):
+            try:
+                # scipy.linalg.cholesky requires lower=True to return L L^T = A
+                transform = cholesky(sigma, lower=True)
+            except LinAlgError:
+                raise ValueError("`sigma` must be positive definite.")
+        else:
+            raise ValueError("`sigma` has incorrect shape.")
     else:
-        func = _weighted_general_function
-        args += (1.0 / asarray(sigma),)
+        transform = None
+
+    func = _wrap_func(f, xdata, ydata, transform)
+    if callable(jac):
+        jac = _wrap_jac(jac, xdata, transform)
+    elif jac is None and method != 'lm':
+        jac = '2-point'
 
     if method == 'lm':
         # Remove full_output from kwargs, otherwise we're passing it in twice.
         return_full = kwargs.pop('full_output', False)
-        res = leastsq(func, p0, args=args, full_output=1, **kwargs)
+        res = leastsq(func, p0, Dfun=jac, full_output=1, **kwargs)
         popt, pcov, infodict, errmsg, ier = res
         cost = np.sum(infodict['fvec'] ** 2)
         if ier not in [1, 2, 3, 4]:
             raise RuntimeError("Optimal parameters not found: " + errmsg)
     else:
-        res = least_squares(func, p0, args=args, bounds=bounds, method=method,
+        # Rename maxfev (leastsq) to max_nfev (least_squares), if specified.
+        if 'max_nfev' not in kwargs:
+            kwargs['max_nfev'] = kwargs.pop('maxfev', None)
+
+        res = least_squares(func, p0, jac=jac, bounds=bounds, method=method,
                             **kwargs)
 
         if not res.success:
@@ -719,11 +816,13 @@ def check_gradient(fcn, Dfcn, x0, args=(), col_deriv=0):
     xp = zeros((n,), float)
     err = zeros((m,), float)
     fvecp = None
-    _minpack._chkder(m, n, x, fvec, fjac, ldfjac, xp, fvecp, 1, err)
+    with _MINPACK_LOCK:
+        _minpack._chkder(m, n, x, fvec, fjac, ldfjac, xp, fvecp, 1, err)
 
     fvecp = atleast_1d(fcn(xp, *args))
     fvecp = fvecp.reshape((m,))
-    _minpack._chkder(m, n, x, fvec, fjac, ldfjac, xp, fvecp, 2, err)
+    with _MINPACK_LOCK:
+        _minpack._chkder(m, n, x, fvec, fjac, ldfjac, xp, fvecp, 2, err)
 
     good = (product(greater(err, 0.5), axis=0))
 

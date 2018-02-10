@@ -40,6 +40,8 @@ References
             Mathematics, Corfu, Greece, 2004.
 .. [NumOpt] J. Nocedal and S. J. Wright, "Numerical optimization, 2nd edition".
 """
+from __future__ import division, print_function, absolute_import
+
 import numpy as np
 from numpy.linalg import lstsq, norm
 
@@ -220,7 +222,7 @@ def dogbox(fun, jac, x0, f0, J0, lb, ub, ftol, xtol, gtol, max_nfev, x_scale,
         # Compute (Gauss-)Newton and build quadratic model for Cauchy step.
         if tr_solver == 'exact':
             J_free = J[:, free_set]
-            newton_step = lstsq(J_free, -f)[0]
+            newton_step = lstsq(J_free, -f, rcond=-1)[0]
 
             # Coefficients for the quadratic model along the anti-gradient.
             a, b = build_quadratic_1d(J_free, g_free, -g_free)

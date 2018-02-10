@@ -26,9 +26,9 @@ import cython
 from libc.math cimport cos, sin, sqrt, M_PI_2
 
 from numpy cimport npy_cdouble
-from _complexstuff cimport *
+from ._complexstuff cimport *
 
-cimport sf_error
+from . cimport sf_error
 
 cdef extern from "amos_wrappers.h":
     npy_cdouble cbesi_wrap( double v, npy_cdouble z) nogil
@@ -50,24 +50,24 @@ cdef inline number_t cbesj(double v, number_t z) nogil:
     if number_t is double:
         return cbesj_wrap_real(v, z)
     else:
-        r = cbesj_wrap(v, (<npy_cdouble*>&z)[0])
-        return (<number_t*>&r)[0]
+        r = cbesj_wrap(v, npy_cdouble_from_double_complex(z))
+        return double_complex_from_npy_cdouble(r)
 
 cdef inline number_t cbesy(double v, number_t z) nogil:
     cdef npy_cdouble r
     if number_t is double:
         return cbesy_wrap_real(v, z)
     else:
-        r = cbesy_wrap(v, (<npy_cdouble*>&z)[0])
-        return (<number_t*>&r)[0]
+        r = cbesy_wrap(v, npy_cdouble_from_double_complex(z))
+        return double_complex_from_npy_cdouble(r)
 
 cdef inline number_t cbesk(double v, number_t z) nogil:
     cdef npy_cdouble r
     if number_t is double:
         return cbesk_wrap_real(v, z)
     else:
-        r = cbesk_wrap(v, (<npy_cdouble*>&z)[0])
-        return (<number_t*>&r)[0]
+        r = cbesk_wrap(v, npy_cdouble_from_double_complex(z))
+        return double_complex_from_npy_cdouble(r)
 
 
 # Spherical Bessel functions
@@ -245,8 +245,8 @@ cdef inline double complex spherical_in_complex(long n, double complex z) nogil:
         else:
             return nan
 
-    s = cbesi_wrap(n + 0.5, (<npy_cdouble*>&z)[0])
-    return zsqrt(M_PI_2/z)*(<double complex*>&s)[0]
+    s = cbesi_wrap(n + 0.5, npy_cdouble_from_double_complex(z))
+    return zsqrt(M_PI_2/z)*double_complex_from_npy_cdouble(s)
 
 
 @cython.cdivision(True)
@@ -300,7 +300,13 @@ cdef inline double spherical_jn_d_real(long n, double x) nogil:
         return -spherical_jn_real(1, x)
     else:
         if x == 0:
-            return 0
+            # DLMF 10.51.2 doesn't work, so use 10.51.1 to get the
+            # exact value
+            if n == 1:
+                return 1.0/3
+            else:
+                return 0
+        # DLMF 10.51.2
         return (spherical_jn_real(n - 1, x) -
                 (n + 1)*spherical_jn_real(n, x)/x)
 
